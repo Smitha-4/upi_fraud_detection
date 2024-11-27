@@ -1,0 +1,36 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}
+UPI Fraud Detection
+{% endblock %}
+
+{% block content %}
+<div class="sub-div" id="introduction">
+    <center>
+        <h1>UPI Fraud Detection</h1>
+        <p style="text-align: center;">Write a Phone number below. Get to know whether the entered Phone Number is a Fraud's Number or Not.</p>
+
+        <h1>Enter the Phone Number without the country code. Only 10 Digit Number</h1>
+        <form actions="predict_fraud_risk" method="POST">
+            {% csrf_token %}
+            <label for="input_text">Phone number:</label><br>
+            <input id="input_text" type="number" name="phone_number"><br><br>
+            <label for="input_text">Age:</label><br>
+            <input id="input_text" type="number" name="age"><br><br>
+            <label for="input_text">Transaction Amount:</label><br>
+            <input id="input_text" type="number" name="trans_amount"><br><br>
+            <label for="input_text" >State:</label><br>
+            <input id="input_text" type="number" name="state"><br><br>
+            <label for="input_text" >Zip Code:</label><br>
+            <input id="input_text" type="number" name="zip_code"><br><br>
+            <button type="submit">Check Fraud Risk</button>
+        </form>
+
+        {% if prediction %}
+            <h2>Fraud Risk Prediction</h2>
+            <p style="color: aliceblue;">{{ prediction }}</p>
+        {% endif %}
+    </center>
+</div>
+{% endblock %}

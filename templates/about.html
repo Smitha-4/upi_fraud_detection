@@ -1,0 +1,211 @@
+{% extends 'base.html' %}
+{% load static %}
+{% block title %}
+Pyspark Code
+{% endblock%}
+{% block content%}
+
+<div class="main-div">
+    <h2>Initial Setup</h2>
+    <p>Incase of Spark, a session has to be intanciated and the load the data. For this Particular Project I had already
+        cleanned the data. So I skipped the prepocessing. </p>
+    <pre>
+        <code class="code">
+            # File location and type
+file_location = "/FileStore/tables/cleaned_file-2.csv"
+file_type = "csv"
+
+# CSV options
+infer_schema = "false"
+first_row_is_header = "true"
+delimiter = ","
+
+# The applied options are for CSV files. For other file types, these will be ignored.
+df = spark.read.format(file_type) \
+  .option("inferSchema", infer_schema) \
+  .option("header", first_row_is_header) \
+  .option("sep", delimiter) \
+  .load(file_location)
+
+display(df)
+        </code>
+    </pre>
+    <br>
+    <br>
+    <pre>
+        <code class="code">
+            df.columns
+df.printSchema()
+        </code>
+    </pre>
+
+    <pre>
+        <code class="code">
+            from pyspark.ml.feature import RegexTokenizer, Lemmatizer, StopWordsRemover, Normalizer
+
+def process_sentence(text_data):
+    tokenizer = RegexTokenizer(inputCol='text', outputCol='words', pattern='\w+')
+    def lemma_function(word, pos):
+        if pos in ["VERB", "AUX"]:
+            return lemmatizer.lemmatize(word, pos='v')
+        else:
+            return lemmatizer.lemmatize(word)
+    lemmatizer=Lemmatizer(inputCol="words", outputCol="lemmas", lemmatizeFunction=lemma_function)
+
+    stop_words =StopWordsRemover(inputCol="lemmas", outputCol="filtered_lemmas", stopWords=stop_words)
+    filter_alpha = udf(lambda tokens : [t for t in tokens if t.isalpha()], ArrayType(StringType()))
+    filtered_lemmas =filter_alpha("filtered_lemmas")
+    normalizer =Normalizer(inputCol="filtered_lemmas", outputCol="normalized_text", lowerCase =True)
+    processed_text = text_data.transform(tokenizer).transform(lemmatizer).transform(stop_words).transform(filtered_lemmas).transform(normalizer)
+    return processed_text
+        </code>
+    </pre>
+
+    <pre>
+        <code class="code">
+            from pyspark.sql.functions import udf, lower, collect_list, lit
+from pyspark.ml.feature import HashingTF, IDF
+from pyspark.ml.linalg import Vectors
+def recommend(input_text):
+    """Recommends restaurants based on user input using PySpark."""
+
+    # Lowercase input text
+    input_text = lower(input_text)
+
+    # Filter data based on extracted criteria
+    data = df.filter(
+        (col("location").isin(extract_list(input_text, "location", df))) &
+        (col("cuisines").isin(extract_list(input_text, "cuisines", df))) &
+        (col("dish_liked").isin(extract_list(input_text, "dish_liked", df))) &
+        (col("rest_type").isin(extract_list(input_text, "rest_type", df))) &
+        (col("price") == extract_price(input_text, price_map))
+    )
+
+    # Process user description text input
+    processed_input = process_sentences(input_text)
+
+    # TF-IDF vectorization
+    hashingTF = HashingTF(inputCol="bag_of_words", outputCol="features")
+    featurizedData = hashingTF.transform(data)
+    idf = IDF(inputCol="features", outputCol="tfidf_features")
+    idfModel = idf.fit(featurizedData)
+    rescaledData = idfModel.transform(featurizedData)
+
+    # Calculate cosine similarities
+    input_vector = Vectors.dense(rescaledData.select("tfidf_features").first().toArray())
+    cosine_similarities = rescaledData.select(col("name"), col("location"), col("cost"), col("cuisines"), col("reviews_list"), dot(col("tfidf_features"), input_vector) / (vector_norm(col("tfidf_features")) * vector_norm(input_vector)))
+
+    # Sort and return recommendations
+    recommendations = cosine_similarities.sort(col("dot(tfidf_features, input_vector) / (vector_norm(tfidf_features) * vector_norm(input_vector))").desc()) \
+                                            .select("name", "location", "cost", "cuisines", "reviews_list") \
+                                            .toPandas() \
+                                            .to_html(index=False)
+    return recommendations
+
+# Helper functions for extracting lists and price
+extract_list_udf = udf(extract_list, ArrayType(StringType()))
+extract_price_udf = udf(extract_price, StringType())
+        </code>
+    </pre>
+
+    <br><br>
+    <pre>
+        <code class="code">
+            from pyspark.ml.recommendation import ALS
+
+
+# with user_id, restaurant_id, and rating columns
+
+# Prepare user-item interaction matrix
+user_item_matrix = data.groupBy("user_id", "restaurant_id").agg(
+    sum("rating").alias("rating")
+)
+
+# Train the ALS model
+als = ALS(rank=10, maxIter=10, regParam=0.1, userCol="user_id", itemCol="restaurant_id", ratingCol="rating")
+model = als.fit(user_item_matrix)
+
+# Get user profile vector for a specific user
+user_id = 123  # Replace with desired user ID
+user_vector = model.userFactors.filter(col("id") == user_id).select("features").first()
+
+# Recommend top-K restaurants for the user
+top_k_recs = model.recommendForUser(user_id, 10)  # Recommend 10 restaurants
+recommendations = top_k_recs.join(data.select("restaurant_id", "name"), on="restaurant_id") \
+                            .select("name", "rating") \
+                            .orderBy(col("rating").desc()) \
+                            .toPandas()
+
+print(f"Top 10 Recommendations for User {user_id}:")
+print(recommendations)
+
+        </code>
+    </pre>
+    <br><br>
+    <pre><code class="code">
+        from pyspark.ml.feature import VectorAssembler
+from pyspark.ml.clustering import KMeans
+
+# Assuming you have a SparkSession named 'spark' and a DataFrame named 'data'
+# with 'latitude' and 'longitude' columns for restaurant locations
+
+# Create a feature vector for latitude and longitude
+assembler = VectorAssembler(inputCols=["latitude", "longitude"], outputCol="features")
+data_with_features = assembler.transform(data)
+
+# Define the number of clusters (k) based on your analysis
+num_clusters = 4  # Adjust this value as needed
+
+# Train the K-Means model
+kmeans = KMeans(k=num_clusters, seed=1)  # Set a random seed for reproducibility
+model = kmeans.fit(data_with_features)
+
+# Predict cluster labels for each restaurant
+predictions = model.transform(data_with_features)
+restaurants_with_cluster = predictions.select("name", "latitude", "longitude", "prediction")  # Assuming a 'name' column
+
+# Analyze the clusters (optional)
+# You can explore the centroids (cluster centers) and visualize the clusters on a map
+centroids = model.clusterCenters()
+print("Cluster centers:")
+centroids.foreach(lambda row: print(row))
+
+print("Sample restaurants with assigned clusters:")
+restaurants_with_cluster.show(truncate=False)
+    </code></pre>
+
+    <pre>
+        <code class="code">
+            from tensorflow.keras.layers import Embedding, Dot, Dense
+
+# User and Restaurant Embedding Layers (dimensions to be chosen)
+user_embedding = Embedding(num_users, embedding_dim)
+restaurant_embedding = Embedding(num_restaurants, embedding_dim)
+
+# Additional Embedding Layers for other features (if applicable)
+
+# User-Restaurant Interaction Layer (e.g., dot product)
+user_restaurant_interaction = Dot(axes=1)([user_embedding(user_id), restaurant_embedding(restaurant_id)])
+
+# Optional: Add hidden layers for more complex interactions
+
+# Prediction Layer
+prediction = Dense(1, activation="sigmoid")(user_restaurant_interaction)
+
+# Model definition
+model = tf.keras.Model(inputs=[user_id, restaurant_id], outputs=prediction)
+
+# Compile the model with optimizer and loss function
+model.compile(optimizer="adam", loss="binary_crossentropy", metrics=["accuracy"])
+
+# Train the model on user-restaurant interaction data using distributed training 
+# with TensorFlow/Keras on Spark
+model.fit(..., epochs=...)
+        </code>
+    </pre>
+</div>
+
+
+
+
+{% endblock%}
